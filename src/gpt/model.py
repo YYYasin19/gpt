@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from tqdm import tqdm
 
-device = torch.device("cpu" if torch.backends.mps.is_available() else "cpu")
+device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
 
 class FeedForward(nn.Module):
@@ -48,8 +48,8 @@ class TransformerBlock(nn.Module):
             device=device,
         )
         self.fforward = FeedForward(src_embed_dim, dropout_p=dropout_p, device=device)
-        self.layer_norm_attn = nn.LayerNorm(src_embed_dim)
-        self.layer_norm_ffwd = nn.LayerNorm(src_embed_dim)
+        self.layer_norm_attn = nn.LayerNorm(src_embed_dim).to(self.device)
+        self.layer_norm_ffwd = nn.LayerNorm(src_embed_dim).to(self.device)
 
     def forward(self, x):
         # go through attention mechanism and, additionally, skip connections (better training though res/skip connections)
@@ -112,8 +112,8 @@ class MultiHeadAttention(nn.Module):
                 for _ in range(num_heads)
             ]
         )
-        self.projection = nn.Linear(src_embed_dim, src_embed_dim)
-        self.dropout = nn.Dropout(dropout_p)
+        self.projection = nn.Linear(src_embed_dim, src_embed_dim).to(self.device)
+        self.dropout = nn.Dropout(dropout_p).to(self.device)
 
     def forward(self, x):
         """
@@ -131,9 +131,10 @@ class LM(nn.Module):
         self,
         vocab_size: int,
         context_length: int,
-        embed_dim: int = 32,
-        num_layers: int = 4,
-        dropout_p: float = 0.5,
+        embed_dim: int,
+        num_layers: int,
+        num_heads: int,
+        dropout_p: float,
         device: torch.device = torch.device("cpu"),
     ):
         super().__init__()
@@ -147,7 +148,7 @@ class LM(nn.Module):
         # self.attention = AttentionHead(embed_dim=embed_dim, context_length=context_length, head_size=embed_dim)
         self.attention = MultiHeadAttention(
             head_size=embed_dim // 4,
-            num_heads=4,
+            num_heads=num_heads,
             context_length=context_length,
             src_embed_dim=embed_dim,
             dropout_p=dropout_p,
@@ -165,7 +166,7 @@ class LM(nn.Module):
                 for _ in range(num_layers)
             ],
             nn.LayerNorm(embed_dim),
-        )
+        ).to(self.device)
 
         self.linear_head = nn.Linear(embed_dim, vocab_size).to(device)
 
@@ -220,20 +221,35 @@ def train(model: nn.Module, train_data: TextDataset, iterations: int = 100):
         loss.backward()
         optimizer.step()
 
-        if it % 50 == 0:
+        if it % 10 == 0:
             tqdm.write(f"{it}/{iterations} - loss: {loss.item():.4f}")
 
     return model
 
 
 if __name__ == "__main__":
-    context_length = 16
+    context_length = 64
+    dropout_p = 0.2
+    embedding_size = 128
+    batch_size = 64
+    num_layers = 4
+    num_heads = 4
+
     text = open("data/tiny-shakespeare.txt").read()
-    train_dataset = TextDataset(text[: int(0.9 * len(text))], device=device, context_length=context_length)
-    val_dataset = TextDataset(text[int(0.9 * len(text)) :], device=device, context_length=context_length)
+    divide = int(0.9 * len(text))
+    train_dataset = TextDataset(text[:divide], device=device, context_length=context_length, batch_size=batch_size)
+    val_dataset = TextDataset(text[divide:], device=device, context_length=context_length, batch_size=batch_size)
 
     data = DataLoader(train_dataset, batch_size=2)
-    model = LM(data.dataset.vocab_size, context_length=train_dataset.context_length, device=device)  # type: ignore
+    model = LM(
+        train_dataset.vocab_size,
+        context_length=train_dataset.context_length,
+        embed_dim=embedding_size,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        dropout_p=dropout_p,
+        device=device,
+    )
     x_batch, y_batch = next(iter(data))
     x_batch, y_batch = x_batch.to(device), y_batch.to(device)
 
@@ -260,8 +276,8 @@ if __name__ == "__main__":
     print(train_dataset.decode_batch(generated))
 
     # train the model and generate new content again
-    # model = torch.compile(model, fullgraph=True, dynamic=False)
-    model = train(model, train_dataset, iterations=10)
+    # model = torch.compile(model, fullgraph=True, dynamic=True, mode="reduce-overhead")
+    model = train(model, train_dataset, iterations=5000)  # type: ignore
     print(f"Val. Loss: {torch.tensor([model.loss(*val_dataset.sample_batch()) for _ in range(50)]).mean():.4f}")
     generated = model.generate(train_dataset.encode_batch([start_text[:context]]), max_len=1000)
     print(train_dataset.decode_batch(generated)[0])
