@@ -1,0 +1,22 @@
+[tool.black]
+line-length = 140
+
+[build-system]
+requires = ["setuptools", "wheel"]
+
+[project]
+name = "gpt"
+version = "0.0.1"
+description = "Simple GPT reimplementation in PyTorch"
+authors = [
+    {name="yasin", email="ytatar9@googlemail.com"}
+]
+readme = "README.md"
+license = {"text"="MIT"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+filterwarnings = ["ignore::DeprecationWarning"]
+    

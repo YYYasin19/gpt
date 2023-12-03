@@ -1,0 +1,18 @@
+[project]
+name = "2312-gpt"
+version = "0.1.0"
+description = "Add a short description here"
+authors = ["Yasin Tatar <ytatar9@googlemail.com>"]
+channels = ["conda-forge", "pytorch"]
+platforms = ["osx-arm64"]
+
+[tasks]
+
+[dependencies]
+python = "3.11.*"
+pytorch = "2.1.1.*"
+ipython = "8.18.1.*"
+pip = "23.3.1.*"
+tqdm = "4.66.1.*"
+pyinstrument = "4.6.1.*"
+numpy = "1.26.2.*"
