@@ -8,6 +8,19 @@ from tqdm import tqdm
 device = torch.device("cpu" if torch.backends.mps.is_available() else "cpu")
 
 
+class FeedForward(nn.Module):
+    def __init__(self, embed_dim: int, device="cpu"):
+        super().__init__()
+        self.fforward = nn.Sequential(
+            nn.Linear(embed_dim, 4 * embed_dim),
+            nn.ReLU(),
+            nn.Linear(4 * embed_dim, embed_dim),
+        ).to(device)
+
+    def forward(self, x):
+        self.fforward(x)
+
+
 class TransformerBlock(nn.Module):
     def __init__(self, num_head: int, src_embed_dim: int, context_length: int, device="cpu"):
         super().__init__()
@@ -16,11 +29,12 @@ class TransformerBlock(nn.Module):
         self.attention = MultiHeadAttention(
             head_size=head_size, num_heads=num_head, src_embed_dim=src_embed_dim, context_length=context_length, device=device
         )
-        self.fforward = nn.Sequential(nn.Linear(src_embed_dim, src_embed_dim)).to(self.device)
+        self.fforward = FeedForward(src_embed_dim, device)
 
     def forward(self, x):
-        x = self.attention(x)
-        x = self.fforward(x)
+        # go through attention mechanism and, additionally, skip connections (better training though res/skip connections)
+        x = x + self.attention(x)
+        x = x + self.fforward(x)
         return x
 
 
@@ -61,13 +75,16 @@ class MultiHeadAttention(nn.Module):
                 for _ in range(num_heads)
             ]
         )
+        self.projection = nn.Linear(src_embed_dim, src_embed_dim)
 
     def forward(self, x):
         """
         calculate multiple attention passes (in parallel) and concat the result
         returns: [batch_size, context, context]
         """
-        return torch.cat([h(x) for h in self.attention_heads], dim=-1)
+        res = torch.cat([h(x) for h in self.attention_heads], dim=-1)
+        res = self.projection(res)
+        return res
 
 
 class LM(nn.Module):
@@ -87,7 +104,7 @@ class LM(nn.Module):
         )
 
         # allows for some computation between the attention output and the logit creation
-        self.fforward = nn.Sequential(nn.Linear(embed_dim, embed_dim), nn.ReLU()).to(self.device)
+        self.fforward = FeedForward(embed_dim, device)
 
         self.blocks = nn.Sequential(
             TransformerBlock(num_head=4, src_embed_dim=embed_dim, context_length=context_length, device=self.device),
@@ -182,7 +199,7 @@ if __name__ == "__main__":
     print(data.dataset.decode_batch(generated))
 
     # train the model and generate new content again
-    model = torch.compile(model)
-    model = train(model, DataLoader(dataset, batch_size=32), epochs=1)
+    model = torch.compile(model, fullgraph=True, dynamic=False)
+    model = train(model, DataLoader(dataset, batch_size=32, num_workers=4), epochs=1)
     generated = model.generate(data.dataset.encode_batch([start_text[:context]]), max_len=1000)
     print(data.dataset.decode_batch(generated)[0])
