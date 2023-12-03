@@ -1,3 +1,4 @@
+from typing import Text
 import torch
 from torch import nn
 from gpt.data import TextDataset
@@ -18,7 +19,7 @@ class FeedForward(nn.Module):
         ).to(device)
 
     def forward(self, x):
-        self.fforward(x)
+        return self.fforward(x)
 
 
 class TransformerBlock(nn.Module):
@@ -30,11 +31,13 @@ class TransformerBlock(nn.Module):
             head_size=head_size, num_heads=num_head, src_embed_dim=src_embed_dim, context_length=context_length, device=device
         )
         self.fforward = FeedForward(src_embed_dim, device)
+        self.layer_norm_attn = nn.LayerNorm(src_embed_dim)
+        self.layer_norm_ffwd = nn.LayerNorm(src_embed_dim)
 
     def forward(self, x):
         # go through attention mechanism and, additionally, skip connections (better training though res/skip connections)
-        x = x + self.attention(x)
-        x = x + self.fforward(x)
+        x = x + self.attention(self.layer_norm_attn(x))
+        x = x + self.fforward(self.layer_norm_ffwd(x))
         return x
 
 
@@ -96,7 +99,6 @@ class LM(nn.Module):
         # TODO: use custom Embeddings
         self.embedding = nn.Embedding(vocab_size, embed_dim).to(device)
         self.pos = nn.Embedding(context_length, embed_dim).to(device)  # positional embeddings -> gives each token a space where it is
-        self.linear_head = nn.Linear(embed_dim, vocab_size).to(device)
 
         # self.attention = AttentionHead(embed_dim=embed_dim, context_length=context_length, head_size=embed_dim)
         self.attention = MultiHeadAttention(
@@ -110,7 +112,10 @@ class LM(nn.Module):
             TransformerBlock(num_head=4, src_embed_dim=embed_dim, context_length=context_length, device=self.device),
             TransformerBlock(num_head=4, src_embed_dim=embed_dim, context_length=context_length, device=self.device),
             TransformerBlock(num_head=4, src_embed_dim=embed_dim, context_length=context_length, device=self.device),
+            nn.LayerNorm(embed_dim),
         )
+
+        self.linear_head = nn.Linear(embed_dim, vocab_size).to(device)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         batch, context = x.shape
@@ -153,26 +158,30 @@ class LM(nn.Module):
         return input_ids
 
 
-def train(model: nn.Module, data: DataLoader, epochs: int = 1):
+def train(model: nn.Module, train_data: TextDataset, iterations: int = 100):
     optimizer = torch.optim.Adam(model.parameters(), lr=6e-4)
+    for it in tqdm(range(iterations), desc="Training"):
+        x_batch, y_batch = train_data.sample_batch()
 
-    for epoch in tqdm(range(epochs), desc="Training"):
-        for x_batch, y_batch in data:
-            optimizer.zero_grad()
-            loss = model.loss(x_batch, y_batch)
-            loss.backward()
-            optimizer.step()
+        optimizer.zero_grad()
+        loss = model.loss(x_batch, y_batch)
+        loss.backward()
+        optimizer.step()
 
-        tqdm.write(f"Epoch {epoch + 1}/{epochs} - loss: {loss.item()}")
+        if it % 50 == 0:
+            tqdm.write(f"{it}/{iterations} - loss: {loss.item():.4f}")
 
     return model
 
 
 if __name__ == "__main__":
     context_length = 16
-    dataset = TextDataset(open("data/tiny-shakespeare.txt").read(), device=device, context_length=context_length)
-    data = DataLoader(dataset, batch_size=2)
-    model = LM(data.dataset.vocab_size, context_length=dataset.context_length, device=device)
+    text = open("data/tiny-shakespeare.txt").read()
+    train_dataset = TextDataset(text[: int(0.9 * len(text))], device=device, context_length=context_length)
+    val_dataset = TextDataset(text[int(0.9 * len(text)) :], device=device, context_length=context_length)
+
+    data = DataLoader(train_dataset, batch_size=2)
+    model = LM(data.dataset.vocab_size, context_length=train_dataset.context_length, device=device)
     x_batch, y_batch = next(iter(data))
     x_batch, y_batch = x_batch.to(device), y_batch.to(device)
 
@@ -199,7 +208,8 @@ if __name__ == "__main__":
     print(data.dataset.decode_batch(generated))
 
     # train the model and generate new content again
-    model = torch.compile(model, fullgraph=True, dynamic=False)
-    model = train(model, DataLoader(dataset, batch_size=32, num_workers=4), epochs=1)
+    # model = torch.compile(model, fullgraph=True, dynamic=False)
+    model = train(model, train_dataset, iterations=1000)
+    print(f"Val. Loss: {torch.tensor([model.loss(*val_dataset.sample_batch()) for _ in range(50)]).mean():.4f}")
     generated = model.generate(data.dataset.encode_batch([start_text[:context]]), max_len=1000)
     print(data.dataset.decode_batch(generated)[0])

@@ -5,11 +5,12 @@ device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
 
 class TextDataset(Dataset):
-    def __init__(self, text: str, context_length: int = 8, device: torch.device = torch.device("cpu")):
+    def __init__(self, text: str, context_length: int = 8, batch_size: int = 32, device: torch.device = torch.device("cpu")):
         """
         context_length: the max amount of characters to be used as context
         """
         self.device = device
+        self.batch_size = batch_size
 
         # create encoding
         self.tokens = sorted(list(set(text)))
@@ -65,6 +66,20 @@ class TextDataset(Dataset):
         return (
             self.data[idx : idx + self.context_length],
             self.data[idx + 1 : idx + self.context_length + 1],
+        )
+
+    def sample_batch(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Sample multiple batches
+        param batch_size: number of batches to sample
+        return: tuple of tensors (x, y) where
+            x is a tensor of shape (batch_size, context_length)
+            y is a tensor of shape (batch_size, context_length)
+        """
+        indices = torch.randint(0, len(self.data) - self.context_length, (self.batch_size,))
+        return (
+            torch.stack([self.data[i : i + self.context_length] for i in indices]),
+            torch.stack([self.data[i + 1 : i + self.context_length + 1] for i in indices]),
         )
 
 
