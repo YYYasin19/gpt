@@ -1,4 +1,7 @@
 .vscode/
+model.pt
+config.txt
+
 # pixi environments
 .pixi
 

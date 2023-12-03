@@ -1,7 +1,37 @@
 import torch
 from torch.utils.data import Dataset, DataLoader
+import tiktoken
 
+enc = tiktoken.get_encoding("p50k_base")
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+
+
+class Encoder:
+    def __init__(self, device=torch.device("cpu")):
+        self.encoding = tiktoken.get_encoding("cl100k_base")
+        self.device = device
+
+    def encode(self, text: str) -> list[int]:
+        return self.encoding.encode(text)
+
+    def decode(self, encoded: torch.Tensor) -> str:
+        return "".join(self.encoding.decode(encoded.tolist()))  # type: ignore
+
+    def encode_batch(self, texts: list[str]) -> torch.Tensor:
+        """
+        convert a string to a list of ascii codes
+        param text: batch of strings shape (batch_size, 1)
+        return: tensor of shape (batch_size, seq_len)
+        """
+        return torch.tensor(self.encoding.encode_batch(texts), dtype=torch.long, device=self.device)
+
+    def decode_batch(self, encoded: torch.Tensor) -> list[str]:
+        """
+        convert a list of ascii codes to a string
+        param encoded: tensor of shape (batch_size, seq_len)
+        return: batch of strings shape (batch_size, 1)
+        """
+        return [self.decode(e) for e in encoded]
 
 
 class TextDataset(Dataset):
@@ -13,24 +43,21 @@ class TextDataset(Dataset):
         self.batch_size = batch_size
 
         # create encoding
-        self.tokens = sorted(list(set(text)))
-        self.encoding = {t: i for i, t in enumerate(self.tokens)}
-        self.decoding = {i: t for i, t in enumerate(self.tokens)}
-
+        self.encoding = Encoder()
         # encode text
         self.original_text = text
         self.data = torch.tensor(self.encode(text), dtype=torch.long, device=self.device)
 
         # metadata
-        self.vocab_size = len(self.tokens)
+        self.vocab_size = self.encoding.encoding.max_token_value
         self.data_len = len(self.data) - context_length
         self.context_length = context_length
 
     def encode(self, text: str) -> list[int]:
-        return list(map(self.encoding.get, text))  # type: ignore
+        return self.encoding.encode(text)
 
     def decode(self, encoded: torch.Tensor) -> str:
-        return "".join(list(map(self.decoding.get, encoded.tolist())))  # type: ignore
+        return "".join(self.encoding.decode(encoded.tolist()))  # type: ignore
 
     def encode_batch(self, texts: list[str]) -> torch.Tensor:
         """
@@ -38,7 +65,7 @@ class TextDataset(Dataset):
         param text: batch of strings shape (batch_size, 1)
         return: tensor of shape (batch_size, seq_len)
         """
-        return torch.tensor([self.encode(s) for s in texts], dtype=torch.long, device=self.device)
+        return torch.tensor(self.encoding.encode_batch(texts), dtype=torch.long, device=self.device)
 
     def decode_batch(self, encoded: torch.Tensor) -> list[str]:
         """

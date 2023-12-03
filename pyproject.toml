@@ -14,6 +14,9 @@ authors = [
 readme = "README.md"
 license = {"text"="MIT"}
 
+[project.scripts]
+gpt = "gpt.main:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

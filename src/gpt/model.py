@@ -136,6 +136,7 @@ class LM(nn.Module):
         num_heads: int,
         dropout_p: float,
         device: torch.device = torch.device("cpu"),
+        **kwargs,
     ):
         super().__init__()
         self.device = device
@@ -147,7 +148,7 @@ class LM(nn.Module):
 
         # self.attention = AttentionHead(embed_dim=embed_dim, context_length=context_length, head_size=embed_dim)
         self.attention = MultiHeadAttention(
-            head_size=embed_dim // 4,
+            head_size=embed_dim // num_heads,
             num_heads=num_heads,
             context_length=context_length,
             src_embed_dim=embed_dim,
@@ -277,7 +278,7 @@ if __name__ == "__main__":
 
     # train the model and generate new content again
     # model = torch.compile(model, fullgraph=True, dynamic=True, mode="reduce-overhead")
-    model = train(model, train_dataset, iterations=5000)  # type: ignore
+    model = train(model, train_dataset, iterations=500)  # type: ignore
     print(f"Val. Loss: {torch.tensor([model.loss(*val_dataset.sample_batch()) for _ in range(50)]).mean():.4f}")
     generated = model.generate(train_dataset.encode_batch([start_text[:context]]), max_len=1000)
     print(train_dataset.decode_batch(generated)[0])
