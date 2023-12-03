@@ -1,5 +1,5 @@
 import torch
-from torch.functional import F
+import torch.nn.functional as F
 
 
 def weighted_aggergation(x: torch.Tensor):

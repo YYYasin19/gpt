@@ -27,10 +27,10 @@ class TextDataset(Dataset):
         self.context_length = context_length
 
     def encode(self, text: str) -> list[int]:
-        return list(map(self.encoding.get, text))
+        return list(map(self.encoding.get, text))  # type: ignore
 
     def decode(self, encoded: torch.Tensor) -> str:
-        return "".join(list(map(self.decoding.get, encoded.tolist())))
+        return "".join(list(map(self.decoding.get, encoded.tolist())))  # type: ignore
 
     def encode_batch(self, texts: list[str]) -> torch.Tensor:
         """

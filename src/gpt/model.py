@@ -1,4 +1,3 @@
-from typing import Text
 import torch
 from torch import nn
 from gpt.data import TextDataset
@@ -10,12 +9,18 @@ device = torch.device("cpu" if torch.backends.mps.is_available() else "cpu")
 
 
 class FeedForward(nn.Module):
-    def __init__(self, embed_dim: int, device="cpu"):
+    def __init__(
+        self,
+        embed_dim: int,
+        dropout_p: float = 0.5,
+        device: torch.device = torch.device("cpu"),
+    ):
         super().__init__()
         self.fforward = nn.Sequential(
             nn.Linear(embed_dim, 4 * embed_dim),
             nn.ReLU(),
             nn.Linear(4 * embed_dim, embed_dim),
+            nn.Dropout(dropout_p),
         ).to(device)
 
     def forward(self, x):
@@ -23,14 +28,26 @@ class FeedForward(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, num_head: int, src_embed_dim: int, context_length: int, device="cpu"):
+    def __init__(
+        self,
+        num_head: int,
+        src_embed_dim: int,
+        context_length: int,
+        dropout_p: float,
+        device: torch.device = torch.device("cpu"),
+    ):
         super().__init__()
         head_size = src_embed_dim // num_head
         self.device = device
         self.attention = MultiHeadAttention(
-            head_size=head_size, num_heads=num_head, src_embed_dim=src_embed_dim, context_length=context_length, device=device
+            head_size=head_size,
+            num_heads=num_head,
+            src_embed_dim=src_embed_dim,
+            context_length=context_length,
+            dropout_p=dropout_p,
+            device=device,
         )
-        self.fforward = FeedForward(src_embed_dim, device)
+        self.fforward = FeedForward(src_embed_dim, dropout_p=dropout_p, device=device)
         self.layer_norm_attn = nn.LayerNorm(src_embed_dim)
         self.layer_norm_ffwd = nn.LayerNorm(src_embed_dim)
 
@@ -42,13 +59,21 @@ class TransformerBlock(nn.Module):
 
 
 class AttentionHead(nn.Module):
-    def __init__(self, src_embed_dim: int, context_length: int, head_size: int = 16, device="cpu"):
+    def __init__(
+        self,
+        src_embed_dim: int,
+        context_length: int,
+        head_size: int = 16,
+        dropout_p: float = 0.5,
+        device: torch.device = torch.device("cpu"),
+    ):
         super().__init__()
         self.head_size = head_size
         self.device = device
         self.query = nn.Linear(src_embed_dim, head_size, bias=False).to(self.device)  # what am I looking for? [b, c, h]
         self.key = nn.Linear(src_embed_dim, head_size, bias=False).to(self.device)  # what am I? [b, c, h]
         self.value = nn.Linear(src_embed_dim, head_size, bias=False).to(self.device)  # what can I tell you about me?
+        self.dropout = nn.Dropout(dropout_p)
 
         # don't optimize the tril, that's only here for masking
         self.register_buffer("tril", torch.tril(torch.ones(context_length, context_length)).to(self.device))
@@ -60,11 +85,20 @@ class AttentionHead(nn.Module):
         weights = weights / embed ** (-0.5)  # preserve variance of weights
         weights = weights.masked_fill(self.tril[:context, :context] == 0, float("-inf"))  # only in decoder blocks
         weights = F.softmax(weights, dim=-1)
+        weights = self.dropout(weights)
         return weights @ v
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, head_size: int, num_heads: int, src_embed_dim: int, context_length: int, device="cpu"):
+    def __init__(
+        self,
+        head_size: int,
+        num_heads: int,
+        src_embed_dim: int,
+        context_length: int,
+        dropout_p: float,
+        device: torch.device = torch.device("cpu"),
+    ):
         super().__init__()
         self.device = device
         self.attention_heads = nn.ModuleList(
@@ -79,6 +113,7 @@ class MultiHeadAttention(nn.Module):
             ]
         )
         self.projection = nn.Linear(src_embed_dim, src_embed_dim)
+        self.dropout = nn.Dropout(dropout_p)
 
     def forward(self, x):
         """
@@ -87,11 +122,20 @@ class MultiHeadAttention(nn.Module):
         """
         res = torch.cat([h(x) for h in self.attention_heads], dim=-1)
         res = self.projection(res)
+        res = self.dropout(res)
         return res
 
 
 class LM(nn.Module):
-    def __init__(self, vocab_size: int, context_length: int, embed_dim: int = 32, device: torch.device = torch.device("cpu")):
+    def __init__(
+        self,
+        vocab_size: int,
+        context_length: int,
+        embed_dim: int = 32,
+        num_layers: int = 4,
+        dropout_p: float = 0.5,
+        device: torch.device = torch.device("cpu"),
+    ):
         super().__init__()
         self.device = device
 
@@ -102,16 +146,24 @@ class LM(nn.Module):
 
         # self.attention = AttentionHead(embed_dim=embed_dim, context_length=context_length, head_size=embed_dim)
         self.attention = MultiHeadAttention(
-            head_size=embed_dim // 4, num_heads=4, context_length=context_length, src_embed_dim=embed_dim, device=self.device
+            head_size=embed_dim // 4,
+            num_heads=4,
+            context_length=context_length,
+            src_embed_dim=embed_dim,
+            dropout_p=dropout_p,
+            device=self.device,
         )
 
         # allows for some computation between the attention output and the logit creation
-        self.fforward = FeedForward(embed_dim, device)
-
+        self.fforward = FeedForward(embed_dim, dropout_p=dropout_p, device=device)
+        num_layers = 4
         self.blocks = nn.Sequential(
-            TransformerBlock(num_head=4, src_embed_dim=embed_dim, context_length=context_length, device=self.device),
-            TransformerBlock(num_head=4, src_embed_dim=embed_dim, context_length=context_length, device=self.device),
-            TransformerBlock(num_head=4, src_embed_dim=embed_dim, context_length=context_length, device=self.device),
+            *[
+                TransformerBlock(
+                    num_head=4, src_embed_dim=embed_dim, context_length=context_length, dropout_p=dropout_p, device=self.device
+                )
+                for _ in range(num_layers)
+            ],
             nn.LayerNorm(embed_dim),
         )
 
@@ -181,7 +233,7 @@ if __name__ == "__main__":
     val_dataset = TextDataset(text[int(0.9 * len(text)) :], device=device, context_length=context_length)
 
     data = DataLoader(train_dataset, batch_size=2)
-    model = LM(data.dataset.vocab_size, context_length=train_dataset.context_length, device=device)
+    model = LM(data.dataset.vocab_size, context_length=train_dataset.context_length, device=device)  # type: ignore
     x_batch, y_batch = next(iter(data))
     x_batch, y_batch = x_batch.to(device), y_batch.to(device)
 
@@ -200,16 +252,16 @@ if __name__ == "__main__":
 
     loss2 = -torch.sum(target_prob * torch.log(res_softmax))  # something like this
 
-    print(f"{data.dataset.decode_batch(x_batch)} -> {data.dataset.decode_batch(y_batch)}: {res.shape}")
+    print(f"{train_dataset.decode_batch(x_batch)} -> {train_dataset.decode_batch(y_batch)}: {res.shape}")
 
     # generate new content
     start_text = "Before we proceed"
-    generated = model.generate(data.dataset.encode_batch([start_text[:context]]), max_len=100)
-    print(data.dataset.decode_batch(generated))
+    generated = model.generate(train_dataset.encode_batch([start_text[:context]]), max_len=50)
+    print(train_dataset.decode_batch(generated))
 
     # train the model and generate new content again
     # model = torch.compile(model, fullgraph=True, dynamic=False)
-    model = train(model, train_dataset, iterations=1000)
+    model = train(model, train_dataset, iterations=10)
     print(f"Val. Loss: {torch.tensor([model.loss(*val_dataset.sample_batch()) for _ in range(50)]).mean():.4f}")
-    generated = model.generate(data.dataset.encode_batch([start_text[:context]]), max_len=1000)
-    print(data.dataset.decode_batch(generated)[0])
+    generated = model.generate(train_dataset.encode_batch([start_text[:context]]), max_len=1000)
+    print(train_dataset.decode_batch(generated)[0])

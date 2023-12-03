@@ -53,7 +53,7 @@ class BigramLM(nn.Module):
 
 def train(model: nn.Module, data: DataLoader, epochs: int = 1):
     optimizer = torch.optim.Adam(model.parameters(), lr=6e-4)
-
+    loss = torch.tensor(0.0)
     for epoch in tqdm(range(epochs), desc="Training"):
         for x_batch, y_batch in data:
             optimizer.zero_grad()
@@ -68,9 +68,8 @@ def train(model: nn.Module, data: DataLoader, epochs: int = 1):
 
 if __name__ == "__main__":
     dataset = TextDataset(open("data/tiny-shakespeare.txt").read(), device=device)
-    data = DataLoader(dataset, batch_size=2)
-    model = BigramLM(data.dataset.vocab_size, device)
-    x_batch, y_batch = next(iter(data))
+    model = BigramLM(dataset.vocab_size, device)
+    x_batch, y_batch = dataset.sample_batch()
     x_batch, y_batch = x_batch.to(device), y_batch.to(device)
 
     res = model(x_batch)
@@ -88,14 +87,14 @@ if __name__ == "__main__":
 
     loss2 = -torch.sum(target_prob * torch.log(res_softmax))  # something like this
 
-    print(f"{data.dataset.decode_batch(x_batch)} -> {data.dataset.decode_batch(y_batch)}: {res.shape}")
+    print(f"{dataset.decode_batch(x_batch)} -> {dataset.decode_batch(y_batch)}: {res.shape}")
 
     # generate new content
     start_text = "Before we proceed"
-    generated = model.generate(data.dataset.encode_batch([start_text]), max_len=100)
-    print(data.dataset.decode_batch(generated))
+    generated = model.generate(dataset.encode_batch([start_text]), max_len=100)
+    print(dataset.decode_batch(generated))
 
     # train the model and generate new content again
     model = train(model, DataLoader(dataset, batch_size=32), epochs=5)
-    generated = model.generate(data.dataset.encode_batch([start_text]), max_len=100)
-    print(data.dataset.decode_batch(generated)[0])
+    generated = model.generate(dataset.encode_batch([start_text]), max_len=100)
+    print(dataset.decode_batch(generated)[0])
