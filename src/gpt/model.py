@@ -4,6 +4,7 @@ from gpt.data import TextDataset
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from tqdm import tqdm
+from gpt.attention import MultiHeadAttention
 
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
@@ -56,74 +57,6 @@ class TransformerBlock(nn.Module):
         x = x + self.attention(self.layer_norm_attn(x))
         x = x + self.fforward(self.layer_norm_ffwd(x))
         return x
-
-
-class AttentionHead(nn.Module):
-    def __init__(
-        self,
-        src_embed_dim: int,
-        context_length: int,
-        head_size: int = 16,
-        dropout_p: float = 0.5,
-        device: torch.device = torch.device("cpu"),
-    ):
-        super().__init__()
-        self.head_size = head_size
-        self.device = device
-        self.query = nn.Linear(src_embed_dim, head_size, bias=False).to(self.device)  # what am I looking for? [b, c, h]
-        self.key = nn.Linear(src_embed_dim, head_size, bias=False).to(self.device)  # what am I? [b, c, h]
-        self.value = nn.Linear(src_embed_dim, head_size, bias=False).to(self.device)  # what can I tell you about me?
-        self.dropout = nn.Dropout(dropout_p)
-
-        # don't optimize the tril, that's only here for masking
-        self.register_buffer("tril", torch.tril(torch.ones(context_length, context_length)).to(self.device))
-
-    def forward(self, x):
-        batch, context, embed = x.shape
-        k, q, v = self.key(x), self.query(x), self.value(x)
-        weights = q @ k.transpose(-2, -1)  # [b, c, h] @ [b, h, c] -> [b, c, c]
-        weights = weights / embed ** (-0.5)  # preserve variance of weights
-        weights = weights.masked_fill(self.tril[:context, :context] == 0, float("-inf"))  # only in decoder blocks
-        weights = F.softmax(weights, dim=-1)
-        weights = self.dropout(weights)
-        return weights @ v
-
-
-class MultiHeadAttention(nn.Module):
-    def __init__(
-        self,
-        head_size: int,
-        num_heads: int,
-        src_embed_dim: int,
-        context_length: int,
-        dropout_p: float,
-        device: torch.device = torch.device("cpu"),
-    ):
-        super().__init__()
-        self.device = device
-        self.attention_heads = nn.ModuleList(
-            [
-                AttentionHead(
-                    head_size=head_size,
-                    src_embed_dim=src_embed_dim,
-                    context_length=context_length,
-                    device=self.device,
-                )
-                for _ in range(num_heads)
-            ]
-        )
-        self.projection = nn.Linear(src_embed_dim, src_embed_dim).to(self.device)
-        self.dropout = nn.Dropout(dropout_p).to(self.device)
-
-    def forward(self, x):
-        """
-        calculate multiple attention passes (in parallel) and concat the result
-        returns: [batch_size, context, context]
-        """
-        res = torch.cat([h(x) for h in self.attention_heads], dim=-1)
-        res = self.projection(res)
-        res = self.dropout(res)
-        return res
 
 
 class LM(nn.Module):
