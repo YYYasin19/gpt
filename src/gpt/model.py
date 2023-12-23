@@ -4,6 +4,7 @@ from gpt.data import TextDataset
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from tqdm import tqdm
+from gpt.attention import MultiHeadAttention
 
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
@@ -34,6 +35,7 @@ class TransformerBlock(nn.Module):
         src_embed_dim: int,
         context_length: int,
         dropout_p: float,
+        rope: bool = False,
         device: torch.device = torch.device("cpu"),
     ):
         super().__init__()
@@ -46,6 +48,7 @@ class TransformerBlock(nn.Module):
             context_length=context_length,
             dropout_p=dropout_p,
             device=device,
+            rope=rope,
         )
         self.fforward = FeedForward(src_embed_dim, dropout_p=dropout_p, device=device)
         self.layer_norm_attn = nn.LayerNorm(src_embed_dim).to(self.device)
@@ -58,74 +61,6 @@ class TransformerBlock(nn.Module):
         return x
 
 
-class AttentionHead(nn.Module):
-    def __init__(
-        self,
-        src_embed_dim: int,
-        context_length: int,
-        head_size: int = 16,
-        dropout_p: float = 0.5,
-        device: torch.device = torch.device("cpu"),
-    ):
-        super().__init__()
-        self.head_size = head_size
-        self.device = device
-        self.query = nn.Linear(src_embed_dim, head_size, bias=False).to(self.device)  # what am I looking for? [b, c, h]
-        self.key = nn.Linear(src_embed_dim, head_size, bias=False).to(self.device)  # what am I? [b, c, h]
-        self.value = nn.Linear(src_embed_dim, head_size, bias=False).to(self.device)  # what can I tell you about me?
-        self.dropout = nn.Dropout(dropout_p)
-
-        # don't optimize the tril, that's only here for masking
-        self.register_buffer("tril", torch.tril(torch.ones(context_length, context_length)).to(self.device))
-
-    def forward(self, x):
-        batch, context, embed = x.shape
-        k, q, v = self.key(x), self.query(x), self.value(x)
-        weights = q @ k.transpose(-2, -1)  # [b, c, h] @ [b, h, c] -> [b, c, c]
-        weights = weights / embed ** (-0.5)  # preserve variance of weights
-        weights = weights.masked_fill(self.tril[:context, :context] == 0, float("-inf"))  # only in decoder blocks
-        weights = F.softmax(weights, dim=-1)
-        weights = self.dropout(weights)
-        return weights @ v
-
-
-class MultiHeadAttention(nn.Module):
-    def __init__(
-        self,
-        head_size: int,
-        num_heads: int,
-        src_embed_dim: int,
-        context_length: int,
-        dropout_p: float,
-        device: torch.device = torch.device("cpu"),
-    ):
-        super().__init__()
-        self.device = device
-        self.attention_heads = nn.ModuleList(
-            [
-                AttentionHead(
-                    head_size=head_size,
-                    src_embed_dim=src_embed_dim,
-                    context_length=context_length,
-                    device=self.device,
-                )
-                for _ in range(num_heads)
-            ]
-        )
-        self.projection = nn.Linear(src_embed_dim, src_embed_dim).to(self.device)
-        self.dropout = nn.Dropout(dropout_p).to(self.device)
-
-    def forward(self, x):
-        """
-        calculate multiple attention passes (in parallel) and concat the result
-        returns: [batch_size, context, context]
-        """
-        res = torch.cat([h(x) for h in self.attention_heads], dim=-1)
-        res = self.projection(res)
-        res = self.dropout(res)
-        return res
-
-
 class LM(nn.Module):
     def __init__(
         self,
@@ -135,6 +70,7 @@ class LM(nn.Module):
         num_layers: int,
         num_heads: int,
         dropout_p: float,
+        rope: bool = False,
         device: torch.device = torch.device("cpu"),
         **kwargs,
     ):
@@ -142,27 +78,20 @@ class LM(nn.Module):
         self.device = device
 
         # creates an Embedding that takes vectors of dim [vocab_size] and outputs vectors of dim [vocab_size]
-        # TODO: use custom Embeddings
         self.embedding = nn.Embedding(vocab_size, embed_dim).to(device)
         self.pos = nn.Embedding(context_length, embed_dim).to(device)  # positional embeddings -> gives each token a space where it is
 
-        # self.attention = AttentionHead(embed_dim=embed_dim, context_length=context_length, head_size=embed_dim)
-        self.attention = MultiHeadAttention(
-            head_size=embed_dim // num_heads,
-            num_heads=num_heads,
-            context_length=context_length,
-            src_embed_dim=embed_dim,
-            dropout_p=dropout_p,
-            device=self.device,
-        )
-
         # allows for some computation between the attention output and the logit creation
         self.fforward = FeedForward(embed_dim, dropout_p=dropout_p, device=device)
-        num_layers = 4
         self.blocks = nn.Sequential(
             *[
                 TransformerBlock(
-                    num_head=4, src_embed_dim=embed_dim, context_length=context_length, dropout_p=dropout_p, device=self.device
+                    num_head=num_heads,
+                    src_embed_dim=embed_dim,
+                    context_length=context_length,
+                    dropout_p=dropout_p,
+                    rope=rope,
+                    device=self.device,
                 )
                 for _ in range(num_layers)
             ],
@@ -203,11 +132,10 @@ class LM(nn.Module):
         for _ in range(max_len):
             input_cropped = input_ids[:, -context:]
             logits = self(input_cropped)
-            # ATTENTION: we only look at the last token (hence the name 'Bigram')
             logits_last = logits[:, -1, :]  # (batch_size, vocab_size)
             probs = F.softmax(logits_last, dim=-1)
             next_token = torch.multinomial(probs, num_samples=1)
-            input_ids = torch.cat([input_ids, next_token], dim=-1)
+            input_ids = torch.cat([input_ids, next_token], dim=-1)  # augment the input_ids with the next token
 
         return input_ids
 
@@ -229,7 +157,7 @@ def train(model: nn.Module, train_data: TextDataset, iterations: int = 100):
 
 
 if __name__ == "__main__":
-    context_length = 64
+    context_length = 80
     dropout_p = 0.2
     embedding_size = 128
     batch_size = 64
@@ -249,6 +177,7 @@ if __name__ == "__main__":
         num_layers=num_layers,
         num_heads=num_heads,
         dropout_p=dropout_p,
+        rope=True,
         device=device,
     )
     x_batch, y_batch = next(iter(data))
