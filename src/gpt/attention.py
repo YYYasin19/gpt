@@ -19,13 +19,18 @@ class AttentionHead(nn.Module):
         self.key = nn.Linear(src_embed_dim, head_size, bias=False).to(self.device)  # what am I? [b, c, h]
         self.value = nn.Linear(src_embed_dim, head_size, bias=False).to(self.device)  # what can I tell you about me?
         self.dropout = nn.Dropout(dropout_p)
+        self.max_c = context_length  # max context length
 
         # don't optimize the tril, that's only here for masking
         self.register_buffer("tril", torch.tril(torch.ones(context_length, context_length)).to(self.device))
 
     def forward(self, x):
-        _, context, embed = x.shape
+        batch, context, embed = x.shape
+        if self.cache is None:
+            self.cache = torch.empty(batch, self.max_c, self.max_c, device=self.device)  # kv cache
         k, q, v = self.key(x), self.query(x), self.value(x)
+        # calculate only newest values
+
         weights = q @ k.transpose(-2, -1)  # [b, c, h] @ [b, h, c] -> [b, c, c]
         weights = weights / embed ** (-0.5)  # preserve variance of weights
         weights = weights.masked_fill(self.tril[:context, :context] == 0, float("-inf"))  # only in decoder blocks
