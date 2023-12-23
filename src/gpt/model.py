@@ -35,6 +35,7 @@ class TransformerBlock(nn.Module):
         src_embed_dim: int,
         context_length: int,
         dropout_p: float,
+        rope: bool = False,
         device: torch.device = torch.device("cpu"),
     ):
         super().__init__()
@@ -47,6 +48,7 @@ class TransformerBlock(nn.Module):
             context_length=context_length,
             dropout_p=dropout_p,
             device=device,
+            rope=rope,
         )
         self.fforward = FeedForward(src_embed_dim, dropout_p=dropout_p, device=device)
         self.layer_norm_attn = nn.LayerNorm(src_embed_dim).to(self.device)
@@ -68,6 +70,7 @@ class LM(nn.Module):
         num_layers: int,
         num_heads: int,
         dropout_p: float,
+        rope: bool = False,
         device: torch.device = torch.device("cpu"),
         **kwargs,
     ):
@@ -75,27 +78,20 @@ class LM(nn.Module):
         self.device = device
 
         # creates an Embedding that takes vectors of dim [vocab_size] and outputs vectors of dim [vocab_size]
-        # TODO: use custom Embeddings
         self.embedding = nn.Embedding(vocab_size, embed_dim).to(device)
         self.pos = nn.Embedding(context_length, embed_dim).to(device)  # positional embeddings -> gives each token a space where it is
 
-        # self.attention = AttentionHead(embed_dim=embed_dim, context_length=context_length, head_size=embed_dim)
-        self.attention = MultiHeadAttention(
-            head_size=embed_dim // num_heads,
-            num_heads=num_heads,
-            context_length=context_length,
-            src_embed_dim=embed_dim,
-            dropout_p=dropout_p,
-            device=self.device,
-        )
-
         # allows for some computation between the attention output and the logit creation
         self.fforward = FeedForward(embed_dim, dropout_p=dropout_p, device=device)
-        num_layers = 4
         self.blocks = nn.Sequential(
             *[
                 TransformerBlock(
-                    num_head=4, src_embed_dim=embed_dim, context_length=context_length, dropout_p=dropout_p, device=self.device
+                    num_head=num_heads,
+                    src_embed_dim=embed_dim,
+                    context_length=context_length,
+                    dropout_p=dropout_p,
+                    rope=rope,
+                    device=self.device,
                 )
                 for _ in range(num_layers)
             ],
@@ -136,11 +132,10 @@ class LM(nn.Module):
         for _ in range(max_len):
             input_cropped = input_ids[:, -context:]
             logits = self(input_cropped)
-            # ATTENTION: we only look at the last token (hence the name 'Bigram')
             logits_last = logits[:, -1, :]  # (batch_size, vocab_size)
             probs = F.softmax(logits_last, dim=-1)
             next_token = torch.multinomial(probs, num_samples=1)
-            input_ids = torch.cat([input_ids, next_token], dim=-1)
+            input_ids = torch.cat([input_ids, next_token], dim=-1)  # augment the input_ids with the next token
 
         return input_ids
 
@@ -162,7 +157,7 @@ def train(model: nn.Module, train_data: TextDataset, iterations: int = 100):
 
 
 if __name__ == "__main__":
-    context_length = 64
+    context_length = 80
     dropout_p = 0.2
     embedding_size = 128
     batch_size = 64
@@ -182,6 +177,7 @@ if __name__ == "__main__":
         num_layers=num_layers,
         num_heads=num_heads,
         dropout_p=dropout_p,
+        rope=True,
         device=device,
     )
     x_batch, y_batch = next(iter(data))

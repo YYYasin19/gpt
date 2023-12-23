@@ -1,7 +1,7 @@
 [project]
 name = "2312-gpt"
 version = "0.1.0"
-description = "Add a short description here"
+description = "A minimal GPT implementation"
 authors = ["Yasin Tatar <ytatar9@googlemail.com>"]
 channels = ["conda-forge", "pytorch"]
 platforms = ["osx-arm64"]
@@ -18,3 +18,4 @@ pyinstrument = "4.6.1.*"
 numpy = "1.26.2.*"
 click = "8.1.7.*"
 tiktoken = "0.5.2.*"
+pytest = "7.4.3.*"

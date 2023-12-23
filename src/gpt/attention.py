@@ -24,7 +24,7 @@ class AttentionHead(nn.Module):
         self.register_buffer("tril", torch.tril(torch.ones(context_length, context_length)).to(self.device))
 
     def forward(self, x):
-        batch, context, embed = x.shape
+        _, context, embed = x.shape
         k, q, v = self.key(x), self.query(x), self.value(x)
         weights = q @ k.transpose(-2, -1)  # [b, c, h] @ [b, h, c] -> [b, c, c]
         weights = weights / embed ** (-0.5)  # preserve variance of weights
@@ -42,21 +42,26 @@ class MultiHeadAttention(nn.Module):
         src_embed_dim: int,
         context_length: int,
         dropout_p: float,
+        rope: bool = False,
         device: torch.device = torch.device("cpu"),
     ):
         super().__init__()
         self.device = device
-        self.attention_heads = nn.ModuleList(
-            [
-                AttentionHead(
-                    head_size=head_size,
-                    src_embed_dim=src_embed_dim,
-                    context_length=context_length,
-                    device=self.device,
-                )
-                for _ in range(num_heads)
-            ]
-        )
+
+        if rope:
+            self.attention_heads = nn.ModuleList(
+                [
+                    AttentionRoPE(head_size=head_size, src_embed_dim=src_embed_dim, context_length=context_length, device=self.device)
+                    for _ in range(num_heads)
+                ]
+            )
+        else:
+            self.attention_heads = nn.ModuleList(
+                [
+                    AttentionHead(head_size=head_size, src_embed_dim=src_embed_dim, context_length=context_length, device=self.device)
+                    for _ in range(num_heads)
+                ]
+            )
         self.projection = nn.Linear(src_embed_dim, src_embed_dim).to(self.device)
         self.dropout = nn.Dropout(dropout_p).to(self.device)
 
@@ -74,7 +79,7 @@ class MultiHeadAttention(nn.Module):
 class RotaryEmbeddings(nn.Module):
     def __init__(self, embed_dim: int, base: int = 10_000, device=torch.device("cpu")):
         """
-        embed_dim: number of features
+        embed_dim: number of features (head_size)
         base: constant used for the matrix values.
         """
         super().__init__()
@@ -86,22 +91,24 @@ class RotaryEmbeddings(nn.Module):
 
     def forward(self, x):
         """
-        x: shape [batch, seq, n_heads, embed_dim] -> [seq, batch, n_heads, embed_dim]
+        x: shape [batch, context, embed_dim] -> [context, batch, embed_dim]
         """
-        x = x.permute(1, 0, 2, 3)
+        x = x.permute(1, 0, 2)
         seq_len = x.shape[0]
         theta = (1.0 / self.base ** (torch.arange(0, self.embed_dim // 2))).to(self.device)
-        seq = torch.arange(0, seq_len).to(self.device)
+        seq = torch.arange(0, seq_len).to(self.device)  # TODO: create lookup table for this
         # TODO: cache this
-        idx_theta = seq * theta
-        idx_theta = torch.cat([idx_theta, idx_theta], dim=0)
-        cos = idx_theta.cos()[:, None, None, :]
-        sin = idx_theta.sin()[:, None, None, :]
+        idx_theta = torch.einsum("i,j->ij", seq, theta)  # [seq_len, embed_dim // 2]
+        idx_theta = torch.cat([idx_theta, idx_theta], dim=1)  # [seq_len, embed_dim]
+        self.cos_cached = idx_theta.cos()[:, None, :]
+        self.sin_cached = idx_theta.sin()[:, None, :]
+
+        # now apply the transformation
         x_rope = x  # TODO: we don't have to apply the transformation to all dimensions
         d_2 = self.embed_dim // 2
-        x_rope_neg = torch.cat([-x[:, :, :, d_2:], x[:, :, :, :d_2]], dim=-1)
-        x_rope = (x_rope * cos[:seq_len]) + (x_rope_neg * sin[:seq_len])
-        x_rope = x_rope.permute(1, 0, 2, 3)
+        neg_half_x = torch.cat([x_rope[:, :, :d_2], -x_rope[:, :, d_2:]], dim=-1)  # [seq_len, batch, embed_dim]
+        x_rope = (x_rope * self.cos_cached[: x.shape[0]]) + (neg_half_x * self.sin_cached[: x.shape[0]])
+        x_rope = x_rope.permute(1, 0, 2)
         return x_rope
 
     def __repr__(self):
